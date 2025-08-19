@@ -5,30 +5,50 @@ import { v4 as uuidv4 } from 'uuid';
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { filename, contentType, brandName } = body;
+    const { filename, contentType, brandName, folder = 'logos' } = body;
 
-    if (!filename || !contentType || !brandName) {
+    if (!filename || !contentType) {
       return NextResponse.json(
         { 
           error: 'Missing required fields',
-          details: 'Filename, content type, and brand name are required' 
+          details: 'Filename and content type are required' 
         },
         { status: 400 }
       );
     }
     
-    // Sanitize the brand name for use in filenames
-    const sanitizedBrandName = brandName
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-') // Replace special chars with hyphens
-      .replace(/^-+|-+$/g, '');    // Remove leading/trailing hyphens
+    // Generate a unique filename
+    const fileExtension = filename.split('.').pop()?.toLowerCase() || 'png';
+    const uniqueId = uuidv4();
+    
+    // If brandName is provided, use it for the filename, otherwise use UUID
+    let key: string;
+    
+    if (brandName) {
+      // Sanitize the brand name for the filename
+      const sanitizedBrandName = brandName
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-') // Replace special chars with hyphens
+        .replace(/^-+|-+$/g, '')     // Remove leading/trailing hyphens
+        .trim();
       
-    // Get file extension from original filename
-    const fileExtension = filename.split('.').pop();
-    const key = `logos/${sanitizedBrandName}.${fileExtension}`;
+      key = `${folder}/${sanitizedBrandName}-${uniqueId}.${fileExtension}`;
+    } else {
+      key = `${folder}/${uniqueId}.${fileExtension}`;
+    }
+
+    console.log('Generating presigned URL with params:', {
+      key,
+      contentType,
+      folder,
+      bucket: process.env.AWS_S3_BUCKET,
+      region: process.env.AWS_REGION
+    });
 
     // Create a presigned URL for S3 upload
     const { url, fields } = await createPresignedUrl(key, contentType);
+
+    console.log('Generated presigned URL:', { url, fields });
 
     return NextResponse.json({
       url,
