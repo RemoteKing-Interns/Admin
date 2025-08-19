@@ -65,3 +65,4 @@ logs
 # Misc
 .vercel
 .next
+.env
