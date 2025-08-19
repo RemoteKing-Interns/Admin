@@ -1,44 +1,18 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
-import { useRouter, useParams } from 'next/navigation';
-import { FiUpload, FiX, FiLoader, FiArrowLeft, FiTrash2 } from 'react-icons/fi';
+import { useState, useRef, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
+import { FiUpload, FiX, FiLoader } from 'react-icons/fi';
 
-export default function EditBrandPage() {
+export default function NewBrandPage() {
   const router = useRouter();
-  const { id } = useParams();
   const [name, setName] = useState('');
   const [file, setFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [currentLogoUrl, setCurrentLogoUrl] = useState('');
   const [isUploading, setIsUploading] = useState(false);
-  const [isDeleting, setIsDeleting] = useState(false);
-  const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [error, setError] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const errorRef = useRef<HTMLDivElement>(null);
-
-  // Fetch brand data
-  useEffect(() => {
-    const fetchBrand = async () => {
-      try {
-        const response = await fetch(`/api/brands/${id}`);
-        if (!response.ok) {
-          throw new Error('Failed to fetch brand');
-        }
-        const brand = await response.json();
-        setName(brand.name);
-        setCurrentLogoUrl(brand.logoUrl);
-      } catch (err) {
-        console.error('Error fetching brand:', err);
-        setError('Failed to load brand data');
-      }
-    };
-
-    if (id) {
-      fetchBrand();
-    }
-  }, [id]);
 
   // Handle file selection and preview
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -65,7 +39,10 @@ export default function EditBrandPage() {
 
   // Generate preview URL when file changes
   useEffect(() => {
-    if (!file) return;
+    if (!file) {
+      setPreviewUrl(null);
+      return;
+    }
 
     const objectUrl = URL.createObjectURL(file);
     setPreviewUrl(objectUrl);
@@ -82,87 +59,112 @@ export default function EditBrandPage() {
       setError('Brand name is required');
       return;
     }
+    
+    if (!file) {
+      setError('Please select a logo');
+      return;
+    }
 
     setIsUploading(true);
     setError('');
 
     try {
-      let logoUrl = currentLogoUrl;
-      
-      // If a new file is uploaded, upload it first
-      if (file) {
-        // Get presigned URL for S3 upload
-        const presignedResponse = await fetch('/api/uploads/presign', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            filename: file.name,
-            contentType: file.type,
-            brandName: name.trim(),
-          }),
-        });
+      // First, get presigned URL for S3 upload with brand name for file naming
+      const presignedResponse = await fetch('/api/uploads/presign', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          filename: file.name,
+          contentType: file.type,
+          brandName: name.trim(),
+        }),
+      });
 
-        if (!presignedResponse.ok) {
-          const errorData = await presignedResponse.text();
-          console.error('Presign error:', errorData);
-          throw new Error('Failed to get upload URL');
-        }
-
-        const { url, fields } = await presignedResponse.json();
-        
-        // Upload the file to S3
-        const formData = new FormData();
-        Object.entries(fields).forEach(([key, value]) => {
-          formData.append(key, value as string);
-        });
-        formData.append('file', file);
-
-        const uploadResponse = await fetch(url, {
-          method: 'POST',
-          body: formData,
-        });
-
-        if (!uploadResponse.ok) {
-          const errorData = await uploadResponse.text();
-          console.error('Upload error:', errorData);
-          throw new Error('Failed to upload file');
-        }
-
-        // Get the public URL of the uploaded file
-        logoUrl = `${url}${fields.key}`;
+      if (!presignedResponse.ok) {
+        const errorData = await presignedResponse.text();
+        console.error('Presign error:', errorData);
+        throw new Error('Failed to get upload URL');
       }
 
-      // Update the brand in the database
-      const brandResponse = await fetch(`/api/brands/${id}`, {
-        method: 'PUT',
+      const { url, fields } = await presignedResponse.json();
+      
+      // Prepare form data for S3 upload
+      const formData = new FormData();
+      console.log('Generated form fields:', Object.keys(fields));
+      
+      // Append all fields from the presigned URL
+      Object.entries(fields).forEach(([key, value]) => {
+        formData.append(key, value as string);
+      });
+      
+      // Append the file last (important for S3)
+      formData.append('file', file);
+      console.log('Form data prepared, starting upload...');
+
+      // Log the URL and form data (excluding file content for security)
+      console.log('Uploading to URL:', url);
+      // Convert FormData to a plain object for logging
+      const formDataObj: Record<string, any> = {};
+      formData.forEach((value, key) => {
+        formDataObj[key] = value instanceof File ? `[File: ${value.name}]` : value;
+      });
+      console.log('Form data:', formDataObj);
+
+      // Upload the file to S3
+      const uploadResponse = await fetch(url, {
+        method: 'POST',
+        body: formData,
+        // Don't set Content-Type header - let the browser set it with the boundary
+      });
+
+      console.log('Upload response status:', uploadResponse.status);
+      const responseText = await uploadResponse.text();
+      console.log('Upload response text:', responseText);
+
+      if (!uploadResponse.ok) {
+        console.error('Upload failed with status:', uploadResponse.status);
+        console.error('Response headers:', Object.fromEntries(uploadResponse.headers.entries()));
+        throw new Error(`Failed to upload file: ${responseText}`);
+      }
+
+      // Get the public URL of the uploaded file
+      // Construct the S3 URL using the bucket name and region from environment variables
+      const bucketName = process.env.NEXT_PUBLIC_S3_BUCKET_NAME || 'remoteking';
+      const region = process.env.NEXT_PUBLIC_S3_REGION || 'ap-southeast-2';
+      const fileUrl = `https://${bucketName}.s3.${region}.amazonaws.com/${fields.key}`;
+
+      // Create the brand in the database
+      const brandResponse = await fetch('/api/brands', {
+        method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
           name: name.trim(),
-          logoUrl,
+          logoUrl: fileUrl,
         }),
       });
 
       if (!brandResponse.ok) {
         const errorData = await brandResponse.json();
-        console.error('Update brand error:', errorData);
+        console.error('Create brand error:', errorData);
         
+        // Handle duplicate brand error
         if (brandResponse.status === 409) {
           throw new Error(errorData.details || 'This brand already exists');
         }
         
-        throw new Error(errorData.error || 'Failed to update brand');
+        throw new Error(errorData.error || 'Failed to create brand');
       }
 
       // Redirect to brands list on success
       router.push('/brands');
       router.refresh();
     } catch (err) {
-      console.error('Error updating brand:', err);
-      const errorMessage = err instanceof Error ? err.message : 'Failed to update brand. Please try again.';
+      console.error('Error creating brand:', err);
+      const errorMessage = err instanceof Error ? err.message : 'Failed to create brand. Please try again.';
       setError(errorMessage);
       
       // Scroll to the error message
@@ -205,55 +207,12 @@ export default function EditBrandPage() {
     e.stopPropagation();
   };
 
-  // Handle brand deletion
-  const handleDelete = async () => {
-    try {
-      setIsDeleting(true);
-      setError('');
-
-      const response = await fetch(`/api/brands/${id}/delete`, {
-        method: 'DELETE',
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to delete brand');
-      }
-
-      // Redirect to brands list on success
-      router.push('/brands');
-      router.refresh();
-    } catch (err) {
-      console.error('Error deleting brand:', err);
-      setError(err instanceof Error ? err.message : 'Failed to delete brand');
-    } finally {
-      setIsDeleting(false);
-      setShowDeleteModal(false);
-    }
-  };
-
   return (
     <div className="flex-1 p-8">
       <div className="max-w-3xl mx-auto">
-        <div className="flex justify-between items-start mb-8">
-          <div>
-            <button
-              onClick={() => router.back()}
-              className="flex items-center text-gray-600 hover:text-gray-900 mb-2"
-            >
-              <FiArrowLeft className="mr-2" /> Back to Brands
-            </button>
-            <h1 className="text-3xl font-bold text-secondary-900">Edit Brand</h1>
-            <p className="text-gray-600">Update the brand details and logo</p>
-          </div>
-          <button
-            onClick={() => setShowDeleteModal(true)}
-            className="flex items-center px-4 py-2 text-sm font-medium text-red-600 bg-red-50 rounded-md hover:bg-red-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
-            disabled={isUploading}
-          >
-            <FiTrash2 className="mr-2 h-4 w-4" />
-            Delete Brand
-          </button>
+        <div className="mb-8">
+          <h1 className="text-3xl font-bold text-secondary-900 mb-2">Add New Brand</h1>
+          <p className="text-gray-600">Upload a logo and enter the brand details</p>
         </div>
 
         {error && (
@@ -279,11 +238,13 @@ export default function EditBrandPage() {
               placeholder="Enter brand name"
               value={name}
               onChange={(e) => {
+                // Convert input to uppercase
                 const upperValue = e.target.value.toUpperCase();
                 setName(upperValue);
                 if (error) setError('');
               }}
               onBlur={(e) => {
+                // Ensure the value is in uppercase when leaving the field
                 const upperValue = e.target.value.toUpperCase();
                 if (upperValue !== e.target.value) {
                   setName(upperValue);
@@ -298,29 +259,25 @@ export default function EditBrandPage() {
 
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
-              Logo
+              Logo <span className="text-red-500">*</span>
             </label>
             
             <div 
               className={`mt-1 flex justify-center px-6 pt-5 pb-6 border-2 border-dashed rounded-md transition-colors ${
-                error && !file && !currentLogoUrl ? 'border-red-300 bg-red-50' : 'border-gray-300 hover:border-primary-500'
+                error && !file ? 'border-red-300 bg-red-50' : 'border-gray-300 hover:border-primary-500'
               }`}
               onDrop={handleDrop}
               onDragOver={handleDragOver}
               onClick={() => fileInputRef.current?.click()}
             >
               <div className="space-y-1 text-center">
-                {previewUrl || currentLogoUrl ? (
+                {previewUrl ? (
                   <div className="flex flex-col items-center">
                     <div className="relative">
                       <img
-                        src={previewUrl || currentLogoUrl}
+                        src={previewUrl}
                         alt="Logo preview"
                         className="h-32 w-auto object-contain"
-                        onError={(e) => {
-                          const target = e.target as HTMLImageElement;
-                          target.src = 'https://via.placeholder.com/200x100?text=Logo+Not+Found';
-                        }}
                       />
                       <button
                         type="button"
@@ -372,7 +329,7 @@ export default function EditBrandPage() {
           <div className="flex justify-end space-x-3 pt-4">
             <button
               type="button"
-              onClick={() => router.push('/brands')}
+              onClick={() => router.back()}
               className="px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 disabled:opacity-50"
               disabled={isUploading}
             >
@@ -381,63 +338,19 @@ export default function EditBrandPage() {
             <button
               type="submit"
               className="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 disabled:opacity-50"
-              disabled={isUploading || !name.trim()}
+              disabled={isUploading || !name.trim() || !file}
             >
               {isUploading ? (
                 <>
                   <FiLoader className="animate-spin -ml-1 mr-2 h-4 w-4" />
-                  Updating...
+                  Uploading...
                 </>
               ) : (
-                'Update Brand'
+                'Add Brand'
               )}
             </button>
           </div>
         </form>
-
-        {/* Delete Confirmation Modal */}
-        {showDeleteModal && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-            <div className="bg-white rounded-lg shadow-xl max-w-md w-full p-6">
-              <h3 className="text-lg font-medium text-gray-900 mb-4">Delete Brand</h3>
-              <p className="text-gray-600 mb-6">
-                Are you sure you want to delete this brand? This action cannot be undone.
-              </p>
-              
-              {error && (
-                <div className="bg-red-50 border-l-4 border-red-500 text-red-700 p-4 rounded-md mb-4">
-                  <p>{error}</p>
-                </div>
-              )}
-              
-              <div className="flex justify-end space-x-3">
-                <button
-                  type="button"
-                  onClick={() => setShowDeleteModal(false)}
-                  className="px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500"
-                  disabled={isDeleting}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={handleDelete}
-                  className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 disabled:opacity-50"
-                  disabled={isDeleting}
-                >
-                  {isDeleting ? (
-                    <>
-                      <FiLoader className="animate-spin -ml-1 mr-2 h-4 w-4" />
-                      Deleting...
-                    </>
-                  ) : (
-                    'Delete Brand'
-                  )}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );
