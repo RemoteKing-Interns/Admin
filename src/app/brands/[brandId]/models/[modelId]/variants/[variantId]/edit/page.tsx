@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { FiArrowLeft, FiLoader, FiTrash2, FiUpload, FiX } from 'react-icons/fi';
@@ -87,6 +87,42 @@ export default function EditVariantPage() {
   const removeArrayItem = <T,>(arr: T[], idx: number): T[] => arr.filter((_, i) => i !== idx);
   const isHexColor = (s: string) => /^#([0-9A-Fa-f]{6})$/.test(s || '');
   const getColorPickerValue = (s: string) => (isHexColor(s) ? s : '#000000');
+
+  // Legend: distinct option names and their colors aggregated from programmingInfo
+  const legend = useMemo(() => {
+    const colorLists = new Map<string, string[]>();
+    const groups = Object.values(programmingInfo) as ProgOption[][];
+    groups.forEach((list) =>
+      list.forEach((opt) => {
+        const name = (opt?.name || '').trim();
+        if (!name) return;
+        const color = (opt?.Color || '').trim();
+        const arr = colorLists.get(name) || [];
+        if (color) arr.push(color);
+        colorLists.set(name, arr);
+      })
+    );
+    const pickColor = (arr: string[]) => {
+      if (!arr || arr.length === 0) return '';
+      const hex = arr.find((c) => isHexColor(c));
+      return hex || arr[0];
+    };
+    return Array.from(colorLists.entries())
+      .map(([name, colors]) => ({ name, color: pickColor(colors) }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [programmingInfo]);
+
+  const applyLegendColor = (legendName: string, hex: string) => {
+    setProgrammingInfo((pi) => {
+      const entries = Object.entries(pi).map(([k, list]) => {
+        const next = (list as ProgOption[]).map((o) =>
+          (o.name || '').trim() === legendName ? { ...o, Color: hex } : o
+        );
+        return [k, next] as const;
+      });
+      return Object.fromEntries(entries) as typeof pi;
+    });
+  };
 
   // Sections configuration for Programming Info
   const progSections = [
@@ -604,6 +640,32 @@ export default function EditVariantPage() {
           {/* Programming Info */}
           <div className="space-y-4">
             <h2 className="text-xl font-semibold">Programming Info</h2>
+            {legend.length > 0 && (
+              <div className="rounded-md border border-gray-200 p-3 bg-gray-50">
+                <div className="text-sm font-medium mb-2">Legend (Names & Colors)</div>
+                <div className="flex flex-wrap gap-3">
+                  {legend.map((it) => (
+                    <div key={it.name} className="flex items-center gap-3 px-3 py-2 border rounded bg-white">
+                      <span
+                        className="inline-block h-4 w-4 rounded border border-gray-300"
+                        style={{ backgroundColor: isHexColor(it.color) ? it.color : undefined }}
+                        title={it.color}
+                      />
+                      <span className="text-sm font-medium text-gray-900 min-w-[120px] truncate" title={it.name}>{it.name}</span>
+                      <input
+                        type="color"
+                        className="h-8 w-10 p-0 border border-gray-300 rounded"
+                        value={isHexColor(it.color) ? it.color : '#000000'}
+                        onChange={(e) => applyLegendColor(it.name, e.target.value)}
+                      />
+                      {it.color && !isHexColor(it.color) && (
+                        <span className="text-xs text-gray-500">({it.color})</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             {progSections.map(([groupKey, label]) => (
               <div key={groupKey} className="space-y-2">
                 <div className="flex items-center justify-between">
